@@ -1,0 +1,26 @@
+[Unit]
+Description=Blog Deploy Webhook Receiver
+After=network.target
+
+[Service]
+Type=simple
+# %h는 systemd가 실행 계정의 홈 디렉터리로 치환해주는 스페셜라이저 —
+# 사용자명을 유닛 파일에 하드코딩하지 않기 위해 사용.
+WorkingDirectory=%h/blog-deploy
+EnvironmentFile=%h/blog-deploy/.env
+ExecStart=/usr/bin/env node %h/blog-deploy/bin/start.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+
+# 설치 (사용자 서비스로 등록 — sudo 불필요):
+#   mkdir -p ~/.config/systemd/user
+#   cp blog-webhook.service.example ~/.config/systemd/user/blog-webhook.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now blog-webhook
+#   loginctl enable-linger $USER   # 로그아웃 후에도 서비스 유지하려면 필요
+#
+# 로그 확인:
+#   journalctl --user -u blog-webhook -f
