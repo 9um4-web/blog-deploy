@@ -6,7 +6,11 @@ const { runDeploy } = require("./deployRunner");
 const { RateLimiter } = require("./rateLimit");
 const { clientKey } = require("./clientKey");
 
-/** config를 받아 express app을 조립한다. 모듈들을 여기서만 서로 연결하고, 각 모듈은 서로를 모른다. */
+/**
+ * config를 받아 express app을 조립한다. 모듈들을 여기서만 서로 연결하고, 각 모듈은 서로를 모른다.
+ * notifier도 같이 반환한다 — 호출자(bin/start.js)가 listen 성공/실패 시 알림을 보낼 수 있어야 하는데,
+ * app만 반환하면 notifier가 이 함수 스코프 안에 갇혀서 밖에서 못 쓴다.
+ */
 function createApp(config) {
   const app = express();
   // Cloudflare/nginx 등 리버스 프록시 뒤에 있다는 전제 — x-forwarded-for를 신뢰해야
@@ -116,7 +120,7 @@ function createApp(config) {
     }
   });
 
-  return app;
+  return { app, notifier };
 }
 
 module.exports = { createApp };
