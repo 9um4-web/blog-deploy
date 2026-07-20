@@ -5,7 +5,7 @@
 #
 # HMAC 서명을 여기서 직접 계산해서 로컬 웹훅 수신기(127.0.0.1)를 호출한다.
 # 시크릿이 GitHub Actions 쪽 커맨드라인에 실릴 필요가 없다는 게 핵심 —
-# 전부 이 서버의 .env에서만 읽는다.
+# 전부 이 서버의 .env에서만 읽는다
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
