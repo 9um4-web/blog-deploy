@@ -8,7 +8,7 @@ const config = loadConfig();
 const { app, notifier } = createApp(config);
 
 const server = app.listen(config.port, "127.0.0.1", () => {
-  const message = `ℹ️ 수신기 서비스 시작 (Webhook Listener Started)\nGitHub 자동 배포 수신기 서비스가 포트 ${config.port}에서 성공적으로 가동되었습니다.`;
+  const message = `GitHub 자동 배포 수신기 서비스가 포트 ${config.port}에서 성공적으로 가동되었습니다.`;
   console.log(`Listening for webhooks on 127.0.0.1:${config.port}`);
   notifier.telegram(`ℹ️ <b>수신기 서비스 시작 (Webhook Listener Started)</b>\n자동 배포 수신기 서비스가 성공적으로 가동되었습니다.`);
   notifier.discordEmbed("ℹ️ 수신기 서비스 시작 (Webhook Listener Started)", message, 0x9b59b6);
