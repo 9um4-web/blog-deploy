@@ -1,6 +1,11 @@
 [Unit]
 Description=Blog Deploy Webhook Receiver
 After=network.target
+# 60초 안에 5번 넘게 재시작하면 systemd가 포기하고 멈춘다.
+# 이게 없으면 .env 오류/포트 충돌처럼 영구적인 실패일 때 5초마다 재시작 → 실패 →
+# (bin/start.js가 보내는) 실패 알림이 무한 반복돼서 Discord/Telegram에 알림 폭탄이 간다.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
