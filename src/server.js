@@ -66,8 +66,10 @@ function createApp(config) {
 
     if (!lock.acquire()) {
       console.warn("Deploy skipped: another build is already running.");
-      notifier.telegram("⚠️ <b>배포 보류 (Deploy Skipped)</b>\n이미 빌드가 진행 중이어서 중복 요청이 안전하게 무시되었습니다.");
-      notifier.discordEmbed(
+      // 순서를 보장하려면 반드시 await — fire-and-forget으로 두면 여러 요청이 동시에 나가서
+      // Discord/Telegram에 도착하는 순서가 코드 순서와 달라질 수 있다.
+      await notifier.telegram("⚠️ <b>배포 보류 (Deploy Skipped)</b>\n이미 빌드가 진행 중이어서 중복 요청이 안전하게 무시되었습니다.");
+      await notifier.discordEmbed(
         "⚠️ 배포 보류 (Deploy Skipped)",
         "이미 다른 빌드 프로세스가 동작 중이어서 이번 배포 요청이 중복 실행 방지를 위해 건너뛰어졌습니다.",
         0xe67e22,
@@ -76,8 +78,8 @@ function createApp(config) {
     }
 
     res.status(202).send("Deploying...");
-    notifier.telegram("🏗️ <b>서버 배포 시작 (Server Deploy Started)</b>\n웹훅 수신 성공. 서버 내부에서 코드 갱신 및 컨테이너 재가동을 진행합니다.");
-    notifier.discordEmbed(
+    await notifier.telegram("🏗️ <b>서버 배포 시작 (Server Deploy Started)</b>\n웹훅 수신 성공. 서버 내부에서 코드 갱신 및 컨테이너 재가동을 진행합니다.");
+    await notifier.discordEmbed(
       "🏗️ 서버 배포 시작 (Server Deploy Started)",
       "웹훅 수신 성공. 서버 내부에서 코드 갱신 및 컨테이너 재가동을 진행합니다.",
       0xf1c40f,
@@ -91,23 +93,25 @@ function createApp(config) {
 
       if (ok) {
         console.log("Deploy success:\n" + log);
-        notifier.telegram("✅ <b>배포 성공 (Deploy Success)</b>\n블로그 서비스가 에러 없이 성공적으로 최신화되었습니다.");
-        notifier.discordEmbed("✅ 배포 성공 (Deploy Success)", "블로그 서비스가 에러 없이 성공적으로 최신화되었습니다.", 0x2ecc71);
+        await notifier.telegram("✅ <b>배포 성공 (Deploy Success)</b>\n블로그 서비스가 에러 없이 성공적으로 최신화되었습니다.");
+        await notifier.discordEmbed("✅ 배포 성공 (Deploy Success)", "블로그 서비스가 에러 없이 성공적으로 최신화되었습니다.", 0x2ecc71);
       } else {
         console.error("Deploy failed:\n" + log);
-        notifier.telegram("❌ <b>배포 실패 (Deploy Failed)</b>\n실서버 컨테이너 갱신 도중 오류가 발생했습니다. (디스코드 로그 확인)");
-        notifier.discordEmbed(
+        await notifier.telegram("❌ <b>배포 실패 (Deploy Failed)</b>\n실서버 컨테이너 갱신 도중 오류가 발생했습니다. (디스코드 로그 확인)");
+        await notifier.discordEmbed(
           "❌ 배포 실패 (Deploy Failed)",
           "실서버 컨테이너 기동(deploy.sh) 도중 에러가 발생했습니다. (상세 내역은 아래 로그를 확인하세요)",
           0xff0000,
         );
 
         const summary = log.length > 500 ? "... (앞부분 생략) ...\n\n" + log.slice(-500) : log;
-        notifier.discordEmbed("❌ 빌드 실패 상세 내역 (Build Error Detail)", `**에러 요약:**\n\`\`\`bash\n${summary}\n\`\`\``, 0xff0000);
+        await notifier.discordEmbed("❌ 빌드 실패 상세 내역 (Build Error Detail)", `**에러 요약:**\n\`\`\`bash\n${summary}\n\`\`\``, 0xff0000);
 
+        // discordFile까지 순서대로 await한 뒤에 임시 파일을 지운다 — 순서 보장 목적이지,
+        // 업로드 자체는 파일을 다 읽은 뒤 요청을 보내므로 unlink 타이밍 자체가 안전에 영향을 주진 않는다.
         const errorTempPath = require("path").join(require("os").tmpdir(), `deploy_error_${Date.now()}.txt`);
         require("fs").writeFileSync(errorTempPath, log);
-        notifier.discordFile(errorTempPath);
+        await notifier.discordFile(errorTempPath);
         try {
           require("fs").unlinkSync(errorTempPath);
         } catch {
