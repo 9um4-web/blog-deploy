@@ -1,95 +1,85 @@
 # blog-deploy
 
-9um4 블로그의 배포 웹훅 수신기 + build-once/pull-and-restart 배포 스크립트.
+9um4 블로그의 서버측 배포 스크립트. self-hosted GitHub Actions 러너가 이 저장소를
+직접 실행한다 — 웹훅 수신기나 별도 데몬은 없다.
 
-GitHub Actions가 이미지를 빌드해서 GHCR에 올리면, 이 프로젝트가 그 완제품 이미지를
-받아와 서버 컨테이너를 재기동한다. 무거운 빌드는 절대 이 서버에서 하지 않는다.
+## 아키텍처
+
+```
+01_blog (public)              9um4/blog-deploy-trigger (private)     9um4-server
+  push → main                   repository_dispatch 수신               self-hosted runner
+    ↓ build/test (GitHub-hosted)   ↓                                    ↓
+    ↓ GHCR push (private)          runs-on: self-hosted  ─────────→  deploy-with-notify.sh
+    ↓ repository_dispatch 전송                                          ↓ deploy.sh
+                                                                        (git reset --hard
+                                                                         + docker compose
+                                                                         pull/up)
+```
+
+- **빌드는 GitHub-hosted 러너**에서만 한다. 신뢰할 수 없는 PR(fork)에서 온 코드가
+  self-hosted 러너(서버 접근 권한 있음)에서 실행될 일이 없다 — self-hosted 러너를
+  건드리는 워크플로는 `repository_dispatch`뿐이고, 그건 `01_blog`의 `push`
+  워크플로(저장소 owner만 트리거 가능)가 성공했을 때만 보낸다.
+- **GHCR은 private로 유지**한다. self-hosted 러너가 매 잡마다 자동 발급받는
+  임시 `GITHUB_TOKEN`으로 `docker login`하므로, 과거처럼 30일마다 만료되는 PAT을
+  따로 관리하거나 이미지를 public으로 돌릴 필요가 없다.
+- **배포 자체는 서버 로컬에서** 이 저장소의 스크립트가 실행한다. 외부에서 서버로
+  들어오는 요청(웹훅, SSH 등)이 전혀 없다 — 러너가 GitHub에 아웃바운드로 폴링
+  연결만 유지하는 구조라 서버에 포트를 열 필요가 없다.
 
 ## 구조
 
 ```
-bin/start.js        진입점 — .env 로드 → config 검증 → express 서버 기동
-src/config.js        환경변수 로딩/검증 (필수값 없으면 즉시 실패)
-src/auth.js           웹훅 요청 검증: HMAC 서명 + 커스텀 헤더 토큰, 둘 다 독립적으로 확인
-src/rateLimit.js        인증 실패 IP 레이트리밋 (슬라이딩 윈도우 락아웃)
-src/clientKey.js        레이트리밋용 클라이언트 IP 추출 (Cloudflare 헤더 우선)
-src/lock.js            배포 중복 실행 방지 락 (타임아웃 있는 인메모리 락)
-src/notify.js          Discord/Telegram 알림
-src/deployRunner.js    deploy.sh 실행 + 로그 시크릿 마스킹
 deploy.sh              실제 배포 동작 (git reset --hard + docker compose pull/up)
-systemd/               systemd user service 템플릿
-test/                  vitest 단위 테스트
+deploy-with-notify.sh   락 + 시작/성공/실패 알림 + 로그 마스킹, deploy.sh를 감싸는 래퍼
+notify.sh               Discord/Telegram 알림 유틸리티
+.env.example            서버 로컬 설정 템플릿
 ```
 
-모듈은 서로를 모른다 — `src/server.js`에서만 조립한다. 인증 로직을 바꾸거나, 락을
-Redis로 바꾸거나, 알림 채널을 추가할 때 다른 모듈을 안 건드리고 해당 파일만 고치면
-된다.
+`deploy.sh`는 "무엇을 배포하는지"만 안다. 락/알림 같은 운영 관심사는
+`deploy-with-notify.sh`가 맡는다 — 알림 채널을 바꾸거나 락 방식을 바꿀 때
+`deploy.sh`를 건드릴 필요가 없다.
 
 ## 왜 이렇게 나눴나
 
-- **`auth.js`가 독립 모듈인 이유**: 웹훅 인증은 이 프로젝트에서 가장 자주 실수가
-  나올 수 있는 지점이라(실제로 이전 버전엔 커스텀 헤더 검증이 통째로 빠져 있었다),
-  단위 테스트로 서명 위조/헤더 누락/길이 불일치 같은 케이스를 각각 검증해뒀다
-  (`test/auth.test.js`).
-- **`lock.js`가 타임아웃을 갖는 이유**: `deploy.sh`가 멈춰버리면 콜백이 영영 안 불려서
-  락이 안 풀리는 게 실제로 겪은 문제였다. 파일 락이나 Redis 락으로 갈 필요 없이,
-  현재 규모(단일 서버·단일 프로세스)에서는 타임아웃 있는 인메모리 락으로 충분하다.
-- **`deployRunner.js`가 마스킹을 하는 이유**: 지금의 `deploy.sh`는 시크릿을 stdout에
-  찍지 않지만, 나중에 디버깅용 명령이 추가되는 순간 조용히 위험해지는 종류의 문제라
-  기본 방어선을 깔아뒀다.
-- **`rateLimit.js`가 있는 이유**: `WEBHOOK_AUTH_TOKEN`이 32바이트 랜덤값이라 브루트포스가
-  현실적으로 불가능하긴 하지만, 이 저장소가 public이 되면 정확히 어떤 인증 프로토콜을
-  쓰는지도 같이 공개된다. 로그인 엔드포인트(`01_blog`)와 동일한 패턴으로 IP당 실패
-  횟수를 제한해 최소한의 방어선을 하나 더 둔다. 401(인증 실패)만 카운트하고 400(본문
-  누락 등 인증 시도 자체가 아닌 경우)은 카운트에서 제외한다.
-
-## 로컬 개발
-
-```bash
-npm install
-cp .env.example .env   # 값 채우기
-npm run test           # vitest 단위 테스트
-npm start               # bin/start.js 실행
-```
+- **웹훅 수신기(Express) + SSH 트리거를 없앤 이유**: Cloudflare 무료 플랜의
+  Bot Fight Mode가 공개 HTTPS 웹훅을 구조적으로 막았고, 이를 SSH-over-Tunnel로
+  우회했지만 여전히 "외부에서 서버로 들어오는 경로"를 인증/락/레이트리밋으로
+  방어해야 하는 부담이 있었다. self-hosted 러너는 서버가 GitHub으로 아웃바운드
+  연결만 유지하므로 이 방어선 자체가 필요 없어진다.
+- **락에 `flock`을 쓰는 이유**: 이전 버전(인메모리 락 + 타임아웃)은 프로세스가
+  멈추면 락이 영원히 안 풀리는 문제가 있었다. `flock`은 파일 디스크립터를 쥔
+  프로세스가 죽으면 커널이 자동으로 락을 해제하므로 별도 타임아웃 로직이 필요 없다.
+- **`redact()`가 있는 이유**: `deploy.sh`가 실패 로그를 Discord로 올릴 때
+  `.env`에 있는 시크릿이 우연히 stdout/stderr에 섞여 나가는 걸 막는 마지막
+  방어선. 지금 당장 `deploy.sh`가 시크릿을 출력할 경로는 없지만, 나중에
+  디버깅용 명령이 추가되는 순간 조용히 위험해지는 종류의 문제라 미리 걸어둔다.
 
 ## 서버 설치
 
 ```bash
 git clone <이 저장소> ~/blog-deploy
 cd ~/blog-deploy
-npm ci --omit=dev
 cp .env.example .env
-# .env 채우기: WEBHOOK_HMAC_SECRET, WEBHOOK_AUTH_TOKEN, CUSTOM_AUTH_HEADER_NAME,
-#             PROJECT_DIR(블로그 소스 clone 경로), DISCORD/TELEGRAM 값
+# .env 채우기: PROJECT_DIR(블로그 소스 clone 경로), DISCORD/TELEGRAM 값
 
-mkdir -p ~/.config/systemd/user
-cp systemd/blog-webhook.service.example ~/.config/systemd/user/blog-webhook.service
-systemctl --user daemon-reload
-systemctl --user enable --now blog-webhook
-loginctl enable-linger $USER   # 로그아웃 후에도 서비스 유지
+chmod +x deploy.sh deploy-with-notify.sh
 ```
 
-## 웹훅 인증 확인
+self-hosted 러너 설치 자체는 이 저장소 밖의 별도 작업이다 — private 트리거
+저장소(`blog-deploy-trigger`)의 **Settings → Actions → Runners → New self-hosted
+runner** 안내를 그대로 따르면 된다.
 
-배포 전에 수동으로 인증이 실제로 걸러내는지 확인하는 걸 권장한다.
+## 동작 확인 (수동)
+
+러너를 등록한 뒤, 실제 push 없이 먼저 수동으로 검증한다.
 
 ```bash
-PAYLOAD='{"ref":"refs/heads/main"}'
-SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "<WEBHOOK_HMAC_SECRET>" | cut -d' ' -f2)
-
-# 정상 요청 — 202 예상
-curl -i -X POST \
-  -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
-  -H "<CUSTOM_AUTH_HEADER_NAME>: <WEBHOOK_AUTH_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD" \
-  http://127.0.0.1:<PORT>/deploy-webhook
-
-# 토큰 틀리게 — 401 예상 (인증이 실제로 걸러내고 있다는 증거)
+cd ~/blog-deploy
+./deploy-with-notify.sh
 ```
 
-## GitHub Actions 쪽 시크릿
-
-이 프로젝트가 검증하는 `WEBHOOK_HMAC_SECRET`/`WEBHOOK_AUTH_TOKEN`/`CUSTOM_AUTH_HEADER_NAME`은
-블로그 소스 저장소(`01_blog`)의 `.github/workflows/deploy.yml`이 보내는 값과
-정확히 일치해야 한다. 두 저장소의 GitHub Secrets에 같은 값을 등록해둘 것.
+Discord에 시작/성공(또는 실패) 알림이 오고, `docker compose ps`로 컨테이너가
+재기동됐는지 확인되면 성공. 이후 `blog-deploy-trigger`의 워크플로를 GitHub
+Actions 대시보드에서 **Run workflow** 수동 트리거로 한 번 더 확인한 다음,
+`01_blog`에 실제 push해서 전체 파이프라인을 검증한다.
